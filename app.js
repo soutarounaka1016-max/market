@@ -1,4 +1,6 @@
 const STORAGE_KEY = "marketNeeds.v1";
+const GITHUB_ISSUES_PER_PAGE = 30;
+const GITHUB_REPO_PATTERN = /github\.com\/([^/\s]+)\/([^/\s#?]+)/i;
 
 function createNeed(input, now = new Date()) {
   return {
@@ -13,6 +15,11 @@ function createNeed(input, now = new Date()) {
   };
 }
 
+function safeDate(value) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
 function normalizeNeed(raw) {
   if (!raw || typeof raw !== "object") return null;
   const title = typeof raw.title === "string" ? raw.title.trim() : "";
@@ -25,7 +32,7 @@ function normalizeNeed(raw) {
     payer: typeof raw.payer === "string" ? raw.payer : "",
     source: typeof raw.source === "string" ? raw.source : "",
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
-  }, raw.updatedAt ? new Date(raw.updatedAt) : new Date());
+  }, safeDate(raw.updatedAt));
 }
 
 function loadNeeds(storage = window.localStorage) {
@@ -58,6 +65,57 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function parseGitHubRepo(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const shorthandMatch = text.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  const urlMatch = text.match(GITHUB_REPO_PATTERN);
+  const match = shorthandMatch || urlMatch;
+  if (!match) return null;
+  return { owner: match[1], repo: match[2].replace(/\.git$/i, "") };
+}
+
+function createGitHubIssuesUrl(repoInfo) {
+  const owner = encodeURIComponent(repoInfo.owner);
+  const repo = encodeURIComponent(repoInfo.repo);
+  return `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${GITHUB_ISSUES_PER_PAGE}`;
+}
+
+function issueToNeed(issue, now = new Date()) {
+  const body = typeof issue.body === "string" ? issue.body.trim() : "";
+  const createdAt = typeof issue.created_at === "string" ? issue.created_at : now.toISOString();
+  const source = typeof issue.html_url === "string" ? issue.html_url : "";
+  return createNeed({
+    id: `github-issue-${issue.id}`,
+    title: issue.title || `GitHub Issue #${issue.number || ""}`,
+    description: body ? body.slice(0, 1200) : "GitHub Issueから取り込みました。詳しい内容は情報源URLを確認してください。",
+    source,
+    createdAt,
+  }, now);
+}
+
+function normalizeGitHubIssues(rawIssues) {
+  if (!Array.isArray(rawIssues)) return [];
+  return rawIssues
+    .filter((issue) => issue && typeof issue === "object" && !issue.pull_request)
+    .filter((issue) => typeof issue.title === "string" && issue.title.trim())
+    .map((issue) => issueToNeed(issue));
+}
+
+async function fetchGitHubIssues(repoText, fetcher = fetch) {
+  const repoInfo = parseGitHubRepo(repoText);
+  if (!repoInfo) {
+    throw new Error("GitHubリポジトリは owner/repo または GitHubのURLで入力してください。");
+  }
+  const response = await fetcher(createGitHubIssuesUrl(repoInfo), {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Issuesを取得できませんでした（HTTP ${response.status}）。リポジトリ名や公開状態を確認してください。`);
+  }
+  return normalizeGitHubIssues(await response.json());
+}
+
 function setupApp() {
   const form = document.querySelector("#need-form");
   const formTitle = document.querySelector("#form-title");
@@ -71,11 +129,20 @@ function setupApp() {
   const cancelEditButton = document.querySelector("#cancel-edit");
   const list = document.querySelector("#needs-list");
   const count = document.querySelector("#need-count");
+  const issuesForm = document.querySelector("#github-issues-form");
+  const repoInput = document.querySelector("#github-repo");
+  const issuesMessage = document.querySelector("#github-issues-message");
+  const importButton = document.querySelector("#github-import-button");
   let needs = loadNeeds();
 
   function showMessage(text, isError = false) {
     message.textContent = text;
     message.classList.toggle("error", isError);
+  }
+
+  function showIssuesMessage(text, isError = false) {
+    issuesMessage.textContent = text;
+    issuesMessage.classList.toggle("error", isError);
   }
 
   function resetForm() {
@@ -139,6 +206,29 @@ function setupApp() {
     renderNeeds();
   });
 
+  issuesForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    importButton.disabled = true;
+    showIssuesMessage("GitHub Issuesを取得しています…");
+    try {
+      const importedNeeds = await fetchGitHubIssues(repoInput.value);
+      const knownSources = new Set(needs.map((need) => need.source).filter(Boolean));
+      const uniqueNeeds = importedNeeds.filter((need) => !knownSources.has(need.source));
+      if (uniqueNeeds.length === 0) {
+        showIssuesMessage("新しく取り込めるIssueはありませんでした。");
+        return;
+      }
+      needs = [...uniqueNeeds, ...needs];
+      saveNeeds(needs);
+      renderNeeds();
+      showIssuesMessage(`${uniqueNeeds.length}件のIssueを課題として取り込みました。`);
+    } catch (error) {
+      showIssuesMessage(error.message || "GitHub Issuesの取得中にエラーが発生しました。", true);
+    } finally {
+      importButton.disabled = false;
+    }
+  });
+
   list.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
@@ -183,5 +273,19 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { STORAGE_KEY, createNeed, normalizeNeed, loadNeeds, saveNeeds, escapeHtml };
+  module.exports = {
+    STORAGE_KEY,
+    GITHUB_ISSUES_PER_PAGE,
+    createNeed,
+    safeDate,
+    normalizeNeed,
+    loadNeeds,
+    saveNeeds,
+    escapeHtml,
+    parseGitHubRepo,
+    createGitHubIssuesUrl,
+    issueToNeed,
+    normalizeGitHubIssues,
+    fetchGitHubIssues,
+  };
 }
