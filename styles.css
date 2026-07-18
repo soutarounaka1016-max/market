@@ -70,12 +70,12 @@ label {
   font-weight: 700;
 }
 
-input, textarea, select, button {
+input, textarea, button {
   width: 100%;
   font: inherit;
 }
 
-input, textarea, select {
+input, textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 13px 14px;
@@ -84,19 +84,7 @@ input, textarea, select {
 }
 
 textarea { resize: vertical; min-height: 120px; }
-input:focus, textarea:focus, select:focus { outline: 3px solid rgb(37 99 235 / 20%); border-color: var(--primary); }
-
-.evaluation-fieldset {
-  margin: 20px 0 0;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 16px;
-}
-
-.evaluation-fieldset legend {
-  padding: 0 6px;
-  font-weight: 800;
-}
+input:focus, textarea:focus { outline: 3px solid rgb(37 99 235 / 20%); border-color: var(--primary); }
 
 .button-row { display: flex; gap: 10px; margin-top: 18px; }
 button {
@@ -122,29 +110,6 @@ button {
 .need-item h3 { margin: 0 0 8px; font-size: 1.15rem; }
 .need-meta { color: var(--muted); font-size: .92rem; margin-bottom: 10px; }
 .need-detail { margin: 8px 0; }
-.evaluation-detail {
-  margin-top: 12px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-.evaluation-detail summary {
-  cursor: pointer;
-  font-weight: 700;
-}
-.evaluation-list {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.evaluation-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid #eef2f7;
-  padding-bottom: 6px;
-}
 .need-actions { display: flex; gap: 10px; margin-top: 14px; }
 .need-actions button { width: auto; min-width: 96px; }
 
