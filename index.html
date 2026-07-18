@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>社会ニーズ発見レーダー</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Market Need Radar</p>
+        <h1>社会ニーズ発見レーダー</h1>
+        <p class="lead">社会の不満や非効率を記録し、事業候補として見返せるようにします。</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card form-card" aria-labelledby="form-title">
+        <h2 id="form-title">課題を登録する</h2>
+        <p class="hint">タイトルだけは必須です。分からない項目は空欄のまま保存できます。</p>
+        <form id="need-form" novalidate>
+          <input type="hidden" id="need-id">
+
+          <label for="title">課題のタイトル <span class="required">必須</span></label>
+          <input id="title" name="title" type="text" autocomplete="off" required placeholder="例：部活動の予定共有が分かりにくい">
+
+          <label for="description">課題の詳しい内容</label>
+          <textarea id="description" name="description" rows="5" placeholder="どんな場面で、何に困っているかを書きます"></textarea>
+
+          <label for="affected">困っている人や企業</label>
+          <input id="affected" name="affected" type="text" placeholder="例：部員、保護者、顧問の先生">
+
+          <label for="payer">支払者候補</label>
+          <input id="payer" name="payer" type="text" placeholder="例：学校、保護者、地域クラブ">
+
+          <label for="source">情報源</label>
+          <input id="source" name="source" type="text" placeholder="例：友人から聞いた話、SNS、レビューURL">
+
+          <fieldset class="evaluation-fieldset">
+            <legend>事業性の評価</legend>
+            <p class="hint">分かる項目だけ、1点から5点で入力します。未入力のままでも保存できます。</p>
+
+            <label for="severity">課題の深刻さ</label>
+            <select id="severity" name="severity">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="frequency">発生頻度</label>
+            <select id="frequency" name="frequency">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="willingnessToPay">支払い意欲</label>
+            <select id="willingnessToPay" name="willingnessToPay">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="customerAccess">顧客への接触しやすさ</label>
+            <select id="customerAccess" name="customerAccess">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="aiPotential">AIで解決できる可能性</label>
+            <select id="aiPotential" name="aiPotential">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="weakCompetition">競争の弱さ</label>
+            <select id="weakCompetition" name="weakCompetition">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+
+            <label for="easeOfDevelopment">開発の簡単さ</label>
+            <select id="easeOfDevelopment" name="easeOfDevelopment">
+              <option value="">未入力</option>
+              <option value="1">1点</option>
+              <option value="2">2点</option>
+              <option value="3">3点</option>
+              <option value="4">4点</option>
+              <option value="5">5点</option>
+            </select>
+          </fieldset>
+
+          <p id="form-message" class="message" role="status" aria-live="polite"></p>
+
+          <div class="button-row">
+            <button type="submit" class="primary-button">登録する</button>
+            <button type="button" id="cancel-edit" class="secondary-button" hidden>編集をやめる</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card list-card" aria-labelledby="list-title">
+        <div class="list-header">
+          <div>
+            <h2 id="list-title">登録した課題</h2>
+            <p id="need-count" class="hint">0件</p>
+          </div>
+        </div>
+        <div id="needs-list" class="needs-list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
