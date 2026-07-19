@@ -3,13 +3,18 @@ const GITHUB_ISSUES_PER_PAGE = 30;
 const GITHUB_REPO_PATTERN = /github\.com\/([^/\s]+)\/([^/\s#?]+)/i;
 
 function createNeed(input, now = new Date()) {
+  const existingExtra = input.extra && typeof input.extra === "object" ? input.extra : {};
   return {
+    ...existingExtra,
     id: input.id || `need-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title: (input.title || "").trim(),
     description: (input.description || "").trim(),
     affected: (input.affected || "").trim(),
     payer: (input.payer || "").trim(),
     source: (input.source || "").trim(),
+    sourceUrl: (input.sourceUrl || "").trim(),
+    externalId: (input.externalId || "").trim(),
+    fetchedAt: input.fetchedAt || "",
     createdAt: input.createdAt || now.toISOString(),
     updatedAt: now.toISOString(),
   };
@@ -25,12 +30,16 @@ function normalizeNeed(raw) {
   const title = typeof raw.title === "string" ? raw.title.trim() : "";
   if (!title) return null;
   return createNeed({
+    extra: raw,
     id: typeof raw.id === "string" && raw.id ? raw.id : undefined,
     title,
     description: typeof raw.description === "string" ? raw.description : "",
     affected: typeof raw.affected === "string" ? raw.affected : "",
     payer: typeof raw.payer === "string" ? raw.payer : "",
     source: typeof raw.source === "string" ? raw.source : "",
+    sourceUrl: typeof raw.sourceUrl === "string" ? raw.sourceUrl : "",
+    externalId: typeof raw.externalId === "string" ? raw.externalId : "",
+    fetchedAt: typeof raw.fetchedAt === "string" ? raw.fetchedAt : "",
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
   }, safeDate(raw.updatedAt));
 }
@@ -53,6 +62,18 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "日付不明";
   return date.toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "日時不明";
+  return date.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function escapeHtml(value) {
@@ -134,6 +155,7 @@ function setupApp() {
   const issuesMessage = document.querySelector("#github-issues-message");
   const importButton = document.querySelector("#github-import-button");
   let needs = loadNeeds();
+  let candidates = [];
 
   function showMessage(text, isError = false) {
     message.textContent = text;
@@ -167,6 +189,10 @@ function setupApp() {
         ${need.affected ? `<p><strong>困っている人：</strong>${escapeHtml(need.affected)}</p>` : ""}
         ${need.payer ? `<p><strong>支払者候補：</strong>${escapeHtml(need.payer)}</p>` : ""}
         ${need.source ? `<p><strong>情報源：</strong>${escapeHtml(need.source)}</p>` : ""}
+        ${need.sourceUrl ? `<p><strong>情報源URL：</strong><a href="${escapeHtml(need.sourceUrl)}" target="_blank" rel="noopener noreferrer">元ページを開く</a></p>` : ""}
+        ${need.externalId ? `<p class="need-meta">外部データID：${escapeHtml(need.externalId)}</p>` : ""}
+        ${need.fetchedAt ? `<p class="need-meta">取得日時：${escapeHtml(formatDateTime(need.fetchedAt))}</p>` : ""}
+        ${renderEvaluationIfPresent(need)}
         <div class="need-actions">
           <button type="button" class="secondary-button" data-action="edit">編集</button>
           <button type="button" class="danger-button" data-action="delete">削除</button>
@@ -175,16 +201,53 @@ function setupApp() {
     `).join("");
   }
 
+  function renderCandidates() {
+    if (candidates.length === 0) {
+      candidatesList.innerHTML = '<p class="empty candidate-empty">取得した課題候補はまだありません。</p>';
+      return;
+    }
+    candidatesList.innerHTML = candidates.map((candidate) => {
+      const saved = isSavedCandidate(candidate, needs);
+      const labels = candidate.labels.length > 0
+        ? candidate.labels.map((label) => `<span class="label-chip">${escapeHtml(label)}</span>`).join("")
+        : '<span class="muted-text">ラベルなし</span>';
+      const bodyPreview = truncateText(candidate.body) || "本文はありません。";
+      return `
+        <article class="candidate-item" data-id="${escapeHtml(candidate.id)}">
+          <div class="candidate-heading">
+            <h4>${escapeHtml(candidate.title)}</h4>
+            <span class="candidate-source">${escapeHtml(candidate.repositoryFullName)} #${escapeHtml(candidate.number)}</span>
+          </div>
+          <p class="candidate-body">${escapeHtml(bodyPreview).replace(/\n/g, "<br>")}</p>
+          <div class="candidate-meta">
+            <span>コメント：${escapeHtml(candidate.comments)}件</span>
+            <span>作成：${escapeHtml(formatDate(candidate.createdAt))}</span>
+            <span>更新：${escapeHtml(formatDate(candidate.updatedAt))}</span>
+          </div>
+          <div class="label-row">${labels}</div>
+          <div class="candidate-actions">
+            ${candidate.htmlUrl ? `<a class="external-link" href="${escapeHtml(candidate.htmlUrl)}" target="_blank" rel="noopener noreferrer">GitHubで開く</a>` : ""}
+            <button type="button" class="primary-button" data-action="save-candidate" ${saved ? "disabled" : ""}>${saved ? "保存済み" : "課題として保存"}</button>
+          </div>
+        </article>
+      `;
+    }).join("");
+  }
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const existing = needs.find((need) => need.id === idInput.value);
     const nextNeed = createNeed({
+      extra: existing,
       id: existing?.id,
       title: titleInput.value,
       description: descriptionInput.value,
       affected: affectedInput.value,
       payer: payerInput.value,
       source: sourceInput.value,
+      sourceUrl: existing?.sourceUrl || "",
+      externalId: existing?.externalId || "",
+      fetchedAt: existing?.fetchedAt || "",
       createdAt: existing?.createdAt,
     });
 
@@ -204,6 +267,56 @@ function setupApp() {
     saveNeeds(needs);
     resetForm();
     renderNeeds();
+    renderCandidates();
+  });
+
+  issuesForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    importButton.disabled = true;
+    showIssuesMessage("GitHub Issuesを取得しています…");
+    try {
+      const result = await fetchGitHubIssues({
+        owner: ownerInput.value,
+        repo: repoInput.value,
+        state: stateInput.value,
+        limit: limitInput.value,
+      });
+      candidates = result.candidates;
+      renderCandidates();
+      const limitMessage = result.remaining === null || result.remaining === undefined
+        ? ""
+        : ` API残り利用回数：${result.remaining}回。`;
+      if (candidates.length === 0) {
+        showIssuesMessage(`取得できるIssueは0件でした。${limitMessage}`);
+      } else {
+        showIssuesMessage(`${candidates.length}件の課題候補を取得しました。内容を確認してから保存してください。${limitMessage}`);
+      }
+    } catch (error) {
+      showIssuesMessage(error.message || "GitHub Issuesの取得中にエラーが発生しました。", true);
+    } finally {
+      importButton.disabled = false;
+    }
+  });
+
+  candidatesList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action='save-candidate']");
+    if (!button) return;
+    const item = button.closest(".candidate-item");
+    const candidate = candidates.find((entry) => entry.id === item?.dataset.id);
+    if (!candidate) return;
+
+    if (isSavedCandidate(candidate, needs)) {
+      showIssuesMessage("この課題は保存済みです", true);
+      renderCandidates();
+      return;
+    }
+
+    const nextNeed = candidateToNeed(candidate);
+    needs = [nextNeed, ...needs];
+    saveNeeds(needs);
+    showIssuesMessage("課題として保存しました。");
+    renderNeeds();
+    renderCandidates();
   });
 
   issuesForm.addEventListener("submit", async (event) => {
@@ -255,6 +368,7 @@ function setupApp() {
       needs = needs.filter((entry) => entry.id !== need.id);
       saveNeeds(needs);
       renderNeeds();
+      renderCandidates();
       showMessage("課題を削除しました。");
       resetForm();
     }
@@ -266,6 +380,7 @@ function setupApp() {
   });
 
   renderNeeds();
+  renderCandidates();
 }
 
 if (typeof document !== "undefined") {
