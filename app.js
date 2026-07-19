@@ -1,432 +1,107 @@
 const STORAGE_KEY = "marketNeeds.v1";
+const APP_NAME = "社会ニーズ発見レーダー";
+const EXPORT_SCHEMA_VERSION = 1;
 const GITHUB_ISSUES_PER_PAGE = 30;
-const HACKER_NEWS_PAGE_SIZE = 20;
-const GITHUB_REPO_PATTERN = /github\.com\/([^/\s]+)\/([^/\s#?]+)/i;
 const HACKER_NEWS_DEFAULT_QUERY = "problem OR pain OR frustrating OR hard";
+const MAX_IMPORT_BYTES = 1024 * 1024;
+const FETCH_TIMEOUT_MS = 12000;
+const REVIEW_STATUSES = { unreviewed: "未確認", promising: "有望", hold: "保留", rejected: "除外" };
+const HN_KINDS = { ask_hn: "Ask HN", show_hn: "Show HN", story: "通常投稿" };
+const SIGNAL_RULES = {
+  positive: ["problem", "pain", "bug", "error", "fail", "broken", "frustrating", "困", "不便", "面倒", "できない", "要望", "改善", "help wanted", "enhancement"],
+  negative: ["release", "changelog", "bump", "dependency", "dependencies", "version", "求人", "hiring", "launch", "announce", "newsletter"],
+  githubLabels: ["bug", "problem", "help wanted", "enhancement", "feature", "改善", "不具合"],
+};
+const GITHUB_REPO_PATTERN = /github\.com\/([^/\s]+)\/([^/\s#?]+)/i;
+
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function toText(v) { return String(v ?? "").trim(); }
+function normalizeNumber(v, fallback = 0) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
+function safeDate(value) { const d = value ? new Date(value) : new Date(); return Number.isNaN(d.getTime()) ? new Date() : d; }
+function normalizeTags(tags) { const src = Array.isArray(tags) ? tags : String(tags || "").split(","); return [...new Set(src.map((t) => toText(t)).filter(Boolean))]; }
+function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[c])); }
+function stripHtml(value) { return String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(); }
+function truncateText(value, maxLength = 300) { const text = stripHtml(value); return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text; }
+function formatDate(value) { const d = new Date(value); return Number.isNaN(d.getTime()) ? "日付不明" : d.toLocaleDateString("ja-JP", { year:"numeric", month:"2-digit", day:"2-digit" }); }
+function formatDateTime(value) { const d = new Date(value); return Number.isNaN(d.getTime()) ? "日時不明" : d.toLocaleString("ja-JP", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }); }
+function includesAny(text, words) { const s = text.toLowerCase(); return words.filter((w) => s.includes(w.toLowerCase())); }
+
+function scoreProblemSignal(item) {
+  const title = toText(item.title); const body = stripHtml(item.description || item.story_text || item.comment_text || "");
+  const tags = normalizeTags(item.tags || []); const all = `${title} ${body} ${tags.join(" ")}`;
+  let score = 20; const plus = []; const minus = [];
+  if (body.length > 80) { score += 14; plus.push("具体的な本文があります"); } else if (!body) { score -= 14; minus.push("本文がありません"); } else { score -= 5; minus.push("本文が短めです"); }
+  const positives = includesAny(all, SIGNAL_RULES.positive); if (positives.length) { score += Math.min(24, positives.length * 6); plus.push(`困りごと語: ${positives.slice(0, 3).join("、")}`); }
+  const negatives = includesAny(all, SIGNAL_RULES.negative); if (negatives.length) { score -= Math.min(24, negatives.length * 8); minus.push(`候補外に近い語: ${negatives.slice(0, 3).join("、")}`); }
+  const labelHits = tags.filter((t) => SIGNAL_RULES.githubLabels.some((w) => t.toLowerCase().includes(w.toLowerCase()))); if (labelHits.length) { score += 14; plus.push(`関連ラベル: ${labelHits.slice(0, 3).join("、")}`); }
+  if (normalizeNumber(item.commentCount) >= 5) { score += 10; plus.push("複数コメントがあります"); }
+  if (normalizeNumber(item.commentCount) >= 20) { score += 8; plus.push("議論が多い投稿です"); }
+  if (/^ask hn:/i.test(title)) { score += 14; plus.push("Ask HN投稿です"); }
+  if (/^show hn:/i.test(title)) { score -= 7; minus.push("Show HNの製品紹介寄りです"); }
+  if (title.length < 12) { score -= 5; minus.push("タイトルが短めです"); }
+  score = clamp(Math.round(score), 0, 100);
+  return { score, positiveReasons: plus.slice(0, 5), negativeReasons: minus.slice(0, 5) };
+}
 
 function createNeed(input, now = new Date()) {
-  const existingExtra = input.extra && typeof input.extra === "object" ? input.extra : {};
-  return {
-    ...existingExtra,
-    id: input.id || `need-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    title: (input.title || "").trim(),
-    description: (input.description || "").trim(),
-    affected: (input.affected || "").trim(),
-    payer: (input.payer || "").trim(),
-    source: (input.source || "").trim(),
-    sourceUrl: (input.sourceUrl || "").trim(),
-    externalId: (input.externalId || "").trim(),
-    sourceType: (input.sourceType || "").trim(),
-    fetchedAt: input.fetchedAt || "",
-    createdAt: input.createdAt || now.toISOString(),
-    updatedAt: now.toISOString(),
-  };
+  const existing = input.extra && typeof input.extra === "object" ? input.extra : {};
+  const signal = input.problemSignalScore !== undefined ? { score: normalizeNumber(input.problemSignalScore), positiveReasons: input.problemSignalReasons?.positiveReasons || [], negativeReasons: input.problemSignalReasons?.negativeReasons || [] } : scoreProblemSignal(input);
+  return { ...existing, id: input.id || `need-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: toText(input.title), description: toText(input.description), affected: toText(input.affected), payer: toText(input.payer), source: toText(input.source), sourceUrl: toText(input.sourceUrl), externalId: toText(input.externalId), sourceType: toText(input.sourceType), fetchedAt: toText(input.fetchedAt), reviewStatus: REVIEW_STATUSES[input.reviewStatus] ? input.reviewStatus : "unreviewed", userMemo: toText(input.userMemo), userTags: normalizeTags(input.userTags), problemSignalScore: clamp(signal.score, 0, 100), problemSignalReasons: signal, createdAt: input.createdAt || now.toISOString(), updatedAt: now.toISOString() };
 }
+function normalizeNeed(raw) { if (!raw || typeof raw !== "object" || !toText(raw.title)) return null; return createNeed({ ...raw, extra: raw, createdAt: raw.createdAt, problemSignalScore: raw.problemSignalScore, problemSignalReasons: raw.problemSignalReasons }, safeDate(raw.updatedAt)); }
+function loadNeeds(storage = window.localStorage) { try { const p = JSON.parse(storage.getItem(STORAGE_KEY) || "[]"); return Array.isArray(p) ? p.map(normalizeNeed).filter(Boolean) : []; } catch (e) { console.error(e); return []; } }
+function saveNeeds(needs, storage = window.localStorage) { storage.setItem(STORAGE_KEY, JSON.stringify(needs)); }
 
-function safeDate(value) {
-  const date = value ? new Date(value) : new Date();
-  return Number.isNaN(date.getTime()) ? new Date() : date;
-}
-
-function normalizeNeed(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const title = typeof raw.title === "string" ? raw.title.trim() : "";
-  if (!title) return null;
-  return createNeed({
-    extra: raw,
-    id: typeof raw.id === "string" && raw.id ? raw.id : undefined,
-    title,
-    description: typeof raw.description === "string" ? raw.description : "",
-    affected: typeof raw.affected === "string" ? raw.affected : "",
-    payer: typeof raw.payer === "string" ? raw.payer : "",
-    source: typeof raw.source === "string" ? raw.source : "",
-    sourceUrl: typeof raw.sourceUrl === "string" ? raw.sourceUrl : "",
-    externalId: typeof raw.externalId === "string" ? raw.externalId : "",
-    sourceType: typeof raw.sourceType === "string" ? raw.sourceType : "",
-    fetchedAt: typeof raw.fetchedAt === "string" ? raw.fetchedAt : "",
-    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
-  }, safeDate(raw.updatedAt));
-}
-
-function loadNeeds(storage = window.localStorage) {
-  try {
-    const parsed = JSON.parse(storage.getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.map(normalizeNeed).filter(Boolean) : [];
-  } catch (error) {
-    console.error("保存データを読み込めませんでした", error);
-    return [];
-  }
-}
-
-function saveNeeds(needs, storage = window.localStorage) {
-  storage.setItem(STORAGE_KEY, JSON.stringify(needs));
-}
-
-function formatDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "日付不明";
-  return date.toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
-
-function formatDateTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "日時不明";
-  return date.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-  }[char]));
-}
-
-function truncateText(value, maxLength = 300) {
-  const text = String(value || "").trim();
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
-}
-
-function normalizeTags(tags) {
-  return Array.isArray(tags) ? tags.map((tag) => String(tag).trim()).filter(Boolean) : [];
-}
-
-function createCandidate(input, now = new Date()) {
-  const sourceType = String(input.sourceType || "").trim();
-  const externalId = String(input.externalId || "").trim();
-  const sourceUrl = String(input.sourceUrl || "").trim();
-  return {
-    candidateId: input.candidateId || `${sourceType}:${externalId || sourceUrl}`,
-    sourceType,
-    sourceName: String(input.sourceName || "").trim(),
-    sourceUrl,
-    externalId,
-    title: String(input.title || "").trim(),
-    description: String(input.description || "").trim(),
-    author: String(input.author || "").trim(),
-    tags: normalizeTags(input.tags),
-    commentCount: Number.isFinite(Number(input.commentCount)) ? Number(input.commentCount) : 0,
-    score: Number.isFinite(Number(input.score)) ? Number(input.score) : 0,
-    publishedAt: input.publishedAt || "",
-    updatedAt: input.updatedAt || "",
-    fetchedAt: input.fetchedAt || now.toISOString(),
-    providerName: String(input.providerName || "").trim(),
-    metadata: input.metadata && typeof input.metadata === "object" ? input.metadata : {},
-  };
-}
-
-function isValidCandidate(candidate) {
-  return Boolean(candidate && candidate.candidateId && candidate.sourceType && candidate.title && candidate.sourceUrl);
-}
-
-function parseGitHubRepo(value) {
-  const text = String(value || "").trim();
-  if (!text) return null;
-  const shorthandMatch = text.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
-  const urlMatch = text.match(GITHUB_REPO_PATTERN);
-  const match = shorthandMatch || urlMatch;
-  if (!match) return null;
-  return { owner: match[1], repo: match[2].replace(/\.git$/i, "") };
-}
-
-function createGitHubIssuesUrl(repoInfo) {
-  return `https://api.github.com/repos/${encodeURIComponent(repoInfo.owner)}/${encodeURIComponent(repoInfo.repo)}/issues?state=open&per_page=${GITHUB_ISSUES_PER_PAGE}`;
-}
-
-function githubIssueToCandidate(issue, repoInfo, now = new Date()) {
-  const repoName = `${repoInfo.owner}/${repoInfo.repo}`;
-  return createCandidate({
-    candidateId: `github:${issue.id}`,
-    sourceType: "github_issues",
-    sourceName: `GitHub Issues (${repoName})`,
-    sourceUrl: issue.html_url,
-    externalId: String(issue.id || issue.number || ""),
-    title: issue.title,
-    description: typeof issue.body === "string" && issue.body.trim() ? issue.body.trim() : "GitHub Issueから取得しました。詳しい内容は元ページを確認してください。",
-    author: issue.user && typeof issue.user.login === "string" ? issue.user.login : "",
-    tags: Array.isArray(issue.labels) ? issue.labels.map((label) => typeof label === "string" ? label : label.name) : [],
-    commentCount: issue.comments,
-    score: 0,
-    publishedAt: issue.created_at,
-    updatedAt: issue.updated_at,
-    fetchedAt: now.toISOString(),
-    providerName: "GitHub REST API",
-    metadata: { number: issue.number, repository: repoName, state: issue.state },
-  }, now);
-}
-
-function normalizeGitHubIssues(rawIssues, repoInfo = { owner: "", repo: "" }, now = new Date()) {
-  if (!Array.isArray(rawIssues)) return [];
-  return rawIssues
-    .filter((issue) => issue && typeof issue === "object" && !issue.pull_request)
-    .map((issue) => githubIssueToCandidate(issue, repoInfo, now))
-    .filter(isValidCandidate);
-}
-
-async function fetchJson(url, errorPrefix, fetcher = fetch, options = {}) {
-  const response = await fetcher(url, options);
-  if (!response.ok) throw new Error(`${errorPrefix}（HTTP ${response.status}）。入力内容や公開状態を確認してください。`);
-  return response.json();
-}
-
-async function fetchGitHubIssues(repoText, fetcher = fetch) {
-  const repoInfo = parseGitHubRepo(repoText);
-  if (!repoInfo) throw new Error("GitHubリポジトリは owner/repo または GitHubのURLで入力してください。");
-  const json = await fetchJson(createGitHubIssuesUrl(repoInfo), "GitHub Issuesを取得できませんでした", fetcher, { headers: { Accept: "application/vnd.github+json" } });
-  return normalizeGitHubIssues(json, repoInfo);
-}
-
-function createHackerNewsUrl(query) {
-  const trimmed = String(query || "").trim() || HACKER_NEWS_DEFAULT_QUERY;
-  const params = new URLSearchParams({ query: trimmed, tags: "story", hitsPerPage: String(HACKER_NEWS_PAGE_SIZE) });
-  return `https://hn.algolia.com/api/v1/search_by_date?${params.toString()}`;
-}
-
-function hackerNewsHitToCandidate(hit, now = new Date()) {
-  const objectId = String(hit.objectID || "");
-  const sourceUrl = hit.url || (objectId ? `https://news.ycombinator.com/item?id=${encodeURIComponent(objectId)}` : "");
-  return createCandidate({
-    candidateId: `hacker_news:${objectId}`,
-    sourceType: "hacker_news",
-    sourceName: "Hacker News",
-    sourceUrl,
-    externalId: objectId,
-    title: hit.title || hit.story_title || "Hacker News story",
-    description: hit.story_text || hit.comment_text || "Hacker Newsから取得しました。詳しい内容は元ページを確認してください。",
-    author: hit.author,
-    tags: ["Hacker News"],
-    commentCount: hit.num_comments,
-    score: hit.points,
-    publishedAt: hit.created_at,
-    updatedAt: hit.updated_at || hit.created_at,
-    fetchedAt: now.toISOString(),
-    providerName: "HN Search API (Algolia)",
-    metadata: { hnItemUrl: objectId ? `https://news.ycombinator.com/item?id=${objectId}` : "" },
-  }, now);
-}
-
-function normalizeHackerNewsStories(raw, now = new Date()) {
-  const hits = raw && Array.isArray(raw.hits) ? raw.hits : [];
-  return hits.map((hit) => hackerNewsHitToCandidate(hit, now)).filter(isValidCandidate);
-}
-
-async function fetchHackerNewsStories(query, fetcher = fetch) {
-  const json = await fetchJson(createHackerNewsUrl(query), "Hacker Newsを取得できませんでした", fetcher);
-  return normalizeHackerNewsStories(json);
-}
-
-function candidateToNeed(candidate, now = new Date()) {
-  return createNeed({
-    id: `external-${candidate.candidateId}`,
-    title: candidate.title,
-    description: truncateText(candidate.description, 1200),
-    source: candidate.sourceName,
-    sourceUrl: candidate.sourceUrl,
-    externalId: candidate.externalId,
-    sourceType: candidate.sourceType,
-    fetchedAt: candidate.fetchedAt,
-    createdAt: candidate.publishedAt || now.toISOString(),
-    extra: { providerName: candidate.providerName, externalMetadata: candidate.metadata },
-  }, now);
-}
-
-function isSavedCandidate(candidate, needs) {
-  return needs.some((need) => (need.sourceUrl && need.sourceUrl === candidate.sourceUrl) || (need.sourceType && need.externalId && need.sourceType === candidate.sourceType && need.externalId === candidate.externalId));
-}
+function createCandidate(input, now = new Date()) { const c = { candidateId: input.candidateId || `${toText(input.sourceType)}:${toText(input.externalId) || toText(input.sourceUrl)}`, sourceType: toText(input.sourceType), sourceName: toText(input.sourceName), sourceUrl: toText(input.sourceUrl), externalId: toText(input.externalId), title: toText(input.title), description: stripHtml(input.description), author: toText(input.author), tags: normalizeTags(input.tags), commentCount: normalizeNumber(input.commentCount), score: normalizeNumber(input.score), publishedAt: toText(input.publishedAt), updatedAt: toText(input.updatedAt), fetchedAt: input.fetchedAt || now.toISOString(), providerName: toText(input.providerName), metadata: input.metadata && typeof input.metadata === "object" ? input.metadata : {} }; c.problemSignalReasons = scoreProblemSignal(c); c.problemSignalScore = c.problemSignalReasons.score; return c; }
+function isValidCandidate(c) { return !!(c && c.candidateId && c.sourceType && c.title && c.sourceUrl); }
+function parseGitHubRepo(value) { const text = toText(value); if (!text) return null; const m = text.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/) || text.match(GITHUB_REPO_PATTERN); return m ? { owner: m[1], repo: m[2].replace(/\.git$/i, "") } : null; }
+function createGitHubIssuesUrl(repo) { return `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}/issues?state=open&per_page=${GITHUB_ISSUES_PER_PAGE}`; }
+function githubIssueToCandidate(issue, repo, now = new Date()) { const repoName = `${repo.owner}/${repo.repo}`; return createCandidate({ candidateId:`github:${issue.id}`, sourceType:"github_issues", sourceName:`GitHub Issues (${repoName})`, sourceUrl:issue.html_url, externalId:String(issue.id || issue.number || ""), title:issue.title, description:issue.body || "", author:issue.user?.login || "", tags:Array.isArray(issue.labels) ? issue.labels.map((l) => typeof l === "string" ? l : l.name) : [], commentCount:issue.comments, publishedAt:issue.created_at, updatedAt:issue.updated_at, providerName:"GitHub REST API", metadata:{ number:issue.number, repository:repoName, state:issue.state } }, now); }
+function normalizeGitHubIssues(raw, repo = { owner:"", repo:"" }, now = new Date()) { return Array.isArray(raw) ? raw.filter((i) => i && !i.pull_request).map((i) => githubIssueToCandidate(i, repo, now)).filter(isValidCandidate) : []; }
+function createHackerNewsUrl(query, options = {}) { const endpoint = options.order === "relevance" ? "search" : "search_by_date"; const kind = options.kind || "all"; let q = toText(query) || HACKER_NEWS_DEFAULT_QUERY; if (kind === "ask_hn" && !/^ask hn:/i.test(q)) q = `Ask HN: ${q}`; if (kind === "show_hn" && !/^show hn:/i.test(q)) q = `Show HN: ${q}`; const params = new URLSearchParams({ query:q, tags:"story", hitsPerPage:String(clamp(normalizeNumber(options.pageSize, 20), 10, 50)) }); return `https://hn.algolia.com/api/v1/${endpoint}?${params}`; }
+function detectHnKind(title) { if (/^ask hn:/i.test(title)) return "ask_hn"; if (/^show hn:/i.test(title)) return "show_hn"; return "story"; }
+function hackerNewsHitToCandidate(hit, now = new Date()) { const id = String(hit.objectID || ""); const hnItemUrl = id ? `https://news.ycombinator.com/item?id=${encodeURIComponent(id)}` : ""; const articleUrl = hit.url || ""; const title = hit.title || hit.story_title || "Hacker News story"; const kind = detectHnKind(title); return createCandidate({ candidateId:`hacker_news:${id}`, sourceType:"hacker_news", sourceName:"Hacker News", sourceUrl:articleUrl || hnItemUrl, externalId:id, title, description:hit.story_text || "", author:hit.author, tags:["Hacker News", HN_KINDS[kind]], commentCount:hit.num_comments, score:hit.points, publishedAt:hit.created_at, updatedAt:hit.updated_at || hit.created_at, providerName:"HN Search API (Algolia)", metadata:{ hnItemUrl, articleUrl, hnKind:kind } }, now); }
+function normalizeHackerNewsStories(raw, now = new Date()) { return raw?.hits?.map((h) => hackerNewsHitToCandidate(h, now)).filter(isValidCandidate) || []; }
+async function fetchJsonWithTimeout(url, errorPrefix, fetcher = fetch, options = {}) { const controller = typeof AbortController !== "undefined" ? new AbortController() : null; const timer = controller ? setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS) : null; try { const res = await fetcher(url, { ...options, signal: controller?.signal }); if (!res.ok) throw new Error(`${errorPrefix}（HTTP ${res.status}）。入力内容、公開状態、利用制限を確認してください。`); return await res.json(); } catch (e) { if (e.name === "AbortError") throw new Error(`${errorPrefix}。通信がタイムアウトしました。`); throw e; } finally { if (timer) clearTimeout(timer); } }
+async function fetchGitHubIssues(repoText, fetcher = fetch) { const repo = parseGitHubRepo(repoText); if (!repo) throw new Error("GitHubリポジトリは owner/repo またはGitHubのURLで入力してください。"); return normalizeGitHubIssues(await fetchJsonWithTimeout(createGitHubIssuesUrl(repo), "GitHub Issuesを取得できませんでした", fetcher, { headers:{ Accept:"application/vnd.github+json" } }), repo); }
+async function fetchHackerNewsStories(query, fetcher = fetch, options = {}) { return normalizeHackerNewsStories(await fetchJsonWithTimeout(createHackerNewsUrl(query, options), "Hacker Newsを取得できませんでした", fetcher)); }
+function candidateToNeed(c, now = new Date()) { return createNeed({ id:`external-${c.candidateId}`, title:c.title, description:truncateText(c.description, 1200), source:c.sourceName, sourceUrl:c.sourceUrl, externalId:c.externalId, sourceType:c.sourceType, fetchedAt:c.fetchedAt, createdAt:now.toISOString(), problemSignalScore:c.problemSignalScore, problemSignalReasons:c.problemSignalReasons, userTags:c.tags, extra:{ providerName:c.providerName, externalMetadata:c.metadata } }, now); }
+function isSavedCandidate(c, needs) { return needs.some((n) => (n.id === `external-${c.candidateId}`) || (n.sourceType && n.externalId && n.sourceType === c.sourceType && n.externalId === c.externalId) || (n.sourceUrl && n.sourceUrl === c.sourceUrl)); }
+function stableSort(items, compare) { return items.map((item, index) => ({ item, index })).sort((a,b) => compare(a.item,b.item) || a.index - b.index).map((x) => x.item); }
+function candidateSearchText(c) { return [c.title,c.description,c.author,c.tags?.join(" "),c.sourceName,c.metadata?.repository].join(" ").toLowerCase(); }
+function filterAndSortCandidates(candidates, needs, filters) { const minComments = Math.max(0, normalizeNumber(filters.minComments)); const minScore = Math.max(0, normalizeNumber(filters.minScore)); const q = toText(filters.query).toLowerCase(); let out = candidates.filter((c) => (!q || candidateSearchText(c).includes(q)) && (filters.source === "all" || c.sourceType === filters.source) && c.commentCount >= minComments && c.score >= minScore); out = out.filter((c) => { const saved = isSavedCandidate(c, needs); const mode = filters.hideSaved ? "unsaved" : filters.saved; return mode === "all" || (mode === "saved" ? saved : !saved); }); const cmp = { signal:(a,b)=>b.problemSignalScore-a.problemSignalScore, newest:(a,b)=>safeDate(b.publishedAt)-safeDate(a.publishedAt), comments:(a,b)=>b.commentCount-a.commentCount, score:(a,b)=>b.score-a.score, fetched:(a,b)=>safeDate(b.fetchedAt)-safeDate(a.fetchedAt) }[filters.sort] || (()=>0); return stableSort(out, cmp); }
+function filterAndSortNeeds(needs, f) { const q = toText(f.query).toLowerCase(); const tag = toText(f.tag).toLowerCase(); const min = Math.max(0, normalizeNumber(f.minSignal)); let out = needs.filter((n) => (!q || [n.title,n.description,n.source,n.userMemo,n.userTags?.join(" ")].join(" ").toLowerCase().includes(q)) && (f.status === "all" || n.reviewStatus === f.status) && (f.source === "all" || (f.source === "manual" ? !n.sourceType : n.sourceType === f.source)) && (!tag || (n.userTags || []).some((t) => t.toLowerCase().includes(tag))) && normalizeNumber(n.problemSignalScore) >= min); const order = Object.keys(REVIEW_STATUSES); const cmp = { updated:(a,b)=>safeDate(b.updatedAt)-safeDate(a.updatedAt), created:(a,b)=>safeDate(b.createdAt)-safeDate(a.createdAt), signal:(a,b)=>b.problemSignalScore-a.problemSignalScore, status:(a,b)=>order.indexOf(a.reviewStatus)-order.indexOf(b.reviewStatus), title:(a,b)=>a.title.localeCompare(b.title,"ja") }[f.sort] || (()=>0); return stableSort(out, cmp); }
+function exportBackup(needs) { return { schemaVersion: EXPORT_SCHEMA_VERSION, exportedAt: new Date().toISOString(), appName: APP_NAME, needs }; }
+function isDuplicateNeed(a, b) { return (a.id && b.id && a.id === b.id) || (a.sourceType && a.externalId && a.sourceType === b.sourceType && a.externalId === b.externalId) || (a.sourceUrl && b.sourceUrl && a.sourceUrl === b.sourceUrl) || (a.title === b.title && a.createdAt === b.createdAt); }
+function analyzeImportText(text, existingNeeds) { if (!text) throw new Error("JSONファイルを選択してください。"); if (new Blob([text]).size > MAX_IMPORT_BYTES) throw new Error("JSONファイルが大きすぎます。1MB以下にしてください。"); let parsed; try { parsed = JSON.parse(text); } catch { throw new Error("JSONを解析できませんでした。ファイル内容を確認してください。"); } const rawNeeds = Array.isArray(parsed) ? parsed : parsed?.needs; if (!Array.isArray(rawNeeds)) throw new Error("形式が不正です。needs配列が必要です。"); const valid = rawNeeds.map(normalizeNeed).filter(Boolean); const invalidCount = rawNeeds.length - valid.length; const uniqueNew = valid.filter((n) => !existingNeeds.some((e) => isDuplicateNeed(n,e))); const duplicateCount = valid.length - uniqueNew.length; return { total: rawNeeds.length, valid, newNeeds: uniqueNew, invalidCount, duplicateCount }; }
 
 function setupApp() {
-  const form = document.querySelector("#need-form");
-  const formTitle = document.querySelector("#form-title");
-  const idInput = document.querySelector("#need-id");
-  const titleInput = document.querySelector("#title");
-  const descriptionInput = document.querySelector("#description");
-  const affectedInput = document.querySelector("#affected");
-  const payerInput = document.querySelector("#payer");
-  const sourceInput = document.querySelector("#source");
-  const message = document.querySelector("#form-message");
-  const cancelEditButton = document.querySelector("#cancel-edit");
-  const list = document.querySelector("#needs-list");
-  const count = document.querySelector("#need-count");
-  const externalForm = document.querySelector("#external-candidates-form");
-  const sourceSelect = document.querySelector("#external-source");
-  const queryInput = document.querySelector("#external-query");
-  const candidatesMessage = document.querySelector("#external-candidates-message");
-  const fetchButton = document.querySelector("#external-fetch-button");
-  const candidatesList = document.querySelector("#candidates-list");
-  let needs = loadNeeds();
-  let candidates = [];
-
-  function showMessage(element, text, isError = false) {
-    element.textContent = text;
-    element.classList.toggle("error", isError);
-  }
-
-  function resetForm() {
-    form.reset();
-    idInput.value = "";
-    formTitle.textContent = "課題を登録する";
-    form.querySelector(".primary-button").textContent = "登録する";
-    cancelEditButton.hidden = true;
-  }
-
-  function renderNeeds() {
-    count.textContent = `${needs.length}件`;
-    if (needs.length === 0) {
-      list.innerHTML = '<p class="empty">まだ課題が登録されていません。左のフォームから最初の課題を登録してください。</p>';
-      return;
-    }
-    list.innerHTML = needs.map((need) => `
-      <article class="need-item" data-id="${escapeHtml(need.id)}">
-        <h3>${escapeHtml(need.title)}</h3>
-        <p class="need-meta">登録日：${escapeHtml(formatDate(need.createdAt))} / 更新日：${escapeHtml(formatDate(need.updatedAt))}</p>
-        ${need.description ? `<p class="need-detail">${escapeHtml(need.description).replace(/\n/g, "<br>")}</p>` : ""}
-        ${need.affected ? `<p><strong>困っている人：</strong>${escapeHtml(need.affected)}</p>` : ""}
-        ${need.payer ? `<p><strong>支払者候補：</strong>${escapeHtml(need.payer)}</p>` : ""}
-        ${need.source ? `<p><strong>情報源：</strong>${escapeHtml(need.source)}</p>` : ""}
-        ${need.sourceUrl ? `<p><strong>情報源URL：</strong><a href="${escapeHtml(need.sourceUrl)}" target="_blank" rel="noopener noreferrer">元ページを開く</a></p>` : ""}
-        ${need.externalId ? `<p class="need-meta">外部データID：${escapeHtml(need.externalId)}</p>` : ""}
-        ${need.fetchedAt ? `<p class="need-meta">取得日時：${escapeHtml(formatDateTime(need.fetchedAt))}</p>` : ""}
-        <div class="need-actions">
-          <button type="button" class="secondary-button" data-action="edit">編集</button>
-          <button type="button" class="danger-button" data-action="delete">削除</button>
-        </div>
-      </article>`).join("");
-  }
-
-  function renderCandidates() {
-    if (candidates.length === 0) {
-      candidatesList.innerHTML = '<p class="empty candidate-empty">取得した課題候補はまだありません。</p>';
-      return;
-    }
-    candidatesList.innerHTML = candidates.map((candidate) => {
-      const saved = isSavedCandidate(candidate, needs);
-      const tags = candidate.tags.length ? candidate.tags.map((tag) => `<span class="label-chip">${escapeHtml(tag)}</span>`).join("") : '<span class="muted-text">タグなし</span>';
-      return `
-        <article class="candidate-item" data-id="${escapeHtml(candidate.candidateId)}">
-          <div class="candidate-heading">
-            <h4>${escapeHtml(candidate.title)}</h4>
-            <span class="candidate-source">${escapeHtml(candidate.sourceName)}</span>
-          </div>
-          <p class="candidate-body">${escapeHtml(truncateText(candidate.description) || "本文はありません。").replace(/\n/g, "<br>")}</p>
-          <div class="candidate-meta">
-            ${candidate.author ? `<span>投稿者：${escapeHtml(candidate.author)}</span>` : ""}
-            <span>コメント：${escapeHtml(candidate.commentCount)}件</span>
-            <span>スコア：${escapeHtml(candidate.score)}</span>
-            ${candidate.publishedAt ? `<span>公開：${escapeHtml(formatDate(candidate.publishedAt))}</span>` : ""}
-          </div>
-          <div class="label-row">${tags}</div>
-          <div class="candidate-actions">
-            <a class="external-link" href="${escapeHtml(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">元ページを開く</a>
-            <button type="button" class="primary-button" data-action="save-candidate" ${saved ? "disabled" : ""}>${saved ? "保存済み" : "課題として保存"}</button>
-          </div>
-        </article>`;
-    }).join("");
-  }
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const existing = needs.find((need) => need.id === idInput.value);
-    const nextNeed = createNeed({
-      extra: existing,
-      id: existing?.id,
-      title: titleInput.value,
-      description: descriptionInput.value,
-      affected: affectedInput.value,
-      payer: payerInput.value,
-      source: sourceInput.value,
-      sourceUrl: existing?.sourceUrl || "",
-      externalId: existing?.externalId || "",
-      sourceType: existing?.sourceType || "",
-      fetchedAt: existing?.fetchedAt || "",
-      createdAt: existing?.createdAt,
-    });
-    if (!nextNeed.title) {
-      showMessage(message, "タイトルを入力してください。", true);
-      titleInput.focus();
-      return;
-    }
-    needs = existing ? needs.map((need) => need.id === existing.id ? nextNeed : need) : [nextNeed, ...needs];
-    saveNeeds(needs);
-    resetForm();
-    renderNeeds();
-    renderCandidates();
-    showMessage(message, existing ? "課題を更新しました。" : "課題を登録しました。");
-  });
-
-  externalForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    fetchButton.disabled = true;
-    showMessage(candidatesMessage, "外部情報を取得しています…");
-    try {
-      candidates = sourceSelect.value === "hacker_news"
-        ? await fetchHackerNewsStories(queryInput.value)
-        : await fetchGitHubIssues(queryInput.value);
-      renderCandidates();
-      showMessage(candidatesMessage, candidates.length ? `${candidates.length}件の課題候補を取得しました。内容を確認してから保存してください。` : "取得できる課題候補は0件でした。");
-    } catch (error) {
-      showMessage(candidatesMessage, error.message || "外部情報の取得中にエラーが発生しました。", true);
-    } finally {
-      fetchButton.disabled = false;
-    }
-  });
-
-  candidatesList.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action='save-candidate']");
-    if (!button) return;
-    const item = button.closest(".candidate-item");
-    const candidate = candidates.find((entry) => entry.candidateId === item?.dataset.id);
-    if (!candidate) return;
-    if (isSavedCandidate(candidate, needs)) {
-      showMessage(candidatesMessage, "この課題は保存済みです。", true);
-      renderCandidates();
-      return;
-    }
-    needs = [candidateToNeed(candidate), ...needs];
-    saveNeeds(needs);
-    showMessage(candidatesMessage, "課題として保存しました。");
-    renderNeeds();
-    renderCandidates();
-  });
-
-  list.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action]");
-    if (!button) return;
-    const item = button.closest(".need-item");
-    const need = needs.find((entry) => entry.id === item?.dataset.id);
-    if (!need) return;
-    if (button.dataset.action === "edit") {
-      idInput.value = need.id;
-      titleInput.value = need.title;
-      descriptionInput.value = need.description;
-      affectedInput.value = need.affected;
-      payerInput.value = need.payer;
-      sourceInput.value = need.source;
-      formTitle.textContent = "課題を編集する";
-      form.querySelector(".primary-button").textContent = "更新する";
-      cancelEditButton.hidden = false;
-      showMessage(message, "編集する内容を確認してください。");
-      titleInput.focus();
-      return;
-    }
-    if (button.dataset.action === "delete" && window.confirm("この課題を削除しますか？")) {
-      needs = needs.filter((entry) => entry.id !== need.id);
-      saveNeeds(needs);
-      renderNeeds();
-      renderCandidates();
-      showMessage(message, "課題を削除しました。");
-      resetForm();
-    }
-  });
-
-  cancelEditButton.addEventListener("click", () => {
-    resetForm();
-    showMessage(message, "編集を取り消しました。");
-  });
-
-  renderNeeds();
-  renderCandidates();
+  const $ = (s) => document.querySelector(s); const $$ = (s) => [...document.querySelectorAll(s)];
+  const els = { form:$("#need-form"), formTitle:$("#form-title"), id:$("#need-id"), title:$("#title"), description:$("#description"), affected:$("#affected"), payer:$("#payer"), source:$("#source"), status:$("#review-status"), tags:$("#user-tags"), memo:$("#user-memo"), msg:$("#form-message"), cancel:$("#cancel-edit"), externalForm:$("#external-candidates-form"), externalSource:$("#external-source"), externalQuery:$("#external-query"), hnPageSize:$("#hn-page-size"), hnOrder:$("#hn-order"), hnKind:$("#hn-kind"), fetchBtn:$("#external-fetch-button"), externalMsg:$("#external-candidates-message"), clearCandidates:$("#clear-candidates"), candidatesList:$("#candidates-list"), candidateSummary:$("#candidate-summary"), needCount:$("#need-count"), needsList:$("#needs-list"), importForm:$("#import-form"), importFile:$("#import-file"), importMsg:$("#import-message"), importPreview:$("#import-preview") };
+  let needs = loadNeeds(); let candidates = []; let pendingImport = null;
+  const show = (el, text, type="success") => { el.textContent = text; el.className = `message ${type}`; };
+  const persist = () => { try { saveNeeds(needs); } catch { show(els.msg, "localStorageへの保存に失敗しました。ブラウザ容量を確認してください。", "error"); } };
+  function resetForm(){ els.form.reset(); els.id.value=""; els.status.value="unreviewed"; els.formTitle.textContent="課題を登録する"; els.form.querySelector(".primary-button").textContent="登録する"; els.cancel.hidden=true; }
+  function candidateFilters(){ return { query:$("#candidate-search").value, source:$("#candidate-source-filter").value, saved:$("#candidate-saved-filter").value, minComments:$("#candidate-min-comments").value, minScore:$("#candidate-min-score").value, sort:$("#candidate-sort").value, hideSaved:$("#hide-saved-candidates").checked }; }
+  function needFilters(){ return { query:$("#need-search").value, status:$("#need-status-filter").value, source:$("#need-source-filter").value, tag:$("#need-tag-filter").value, minSignal:$("#need-min-signal").value, sort:$("#need-sort").value }; }
+  function renderCandidates(){ const filtered = filterAndSortCandidates(candidates, needs, candidateFilters()); const saved = candidates.filter((c)=>isSavedCandidate(c, needs)).length; els.candidateSummary.textContent = `取得総数：${candidates.length}件 / 絞り込み後：${filtered.length}件 / 未保存：${candidates.length-saved}件 / 保存済み：${saved}件`; els.candidatesList.innerHTML = filtered.length ? filtered.map((c)=>{ const s=isSavedCandidate(c,needs); return `<article class="candidate-item ${s?'is-saved':''}" data-id="${escapeHtml(c.candidateId)}"><div class="item-head"><h4>${escapeHtml(c.title)}</h4><span>${escapeHtml(c.sourceName)}</span></div><p class="score">課題らしさ目安：${c.problemSignalScore}点（AI評価・成功確率ではありません）</p><p>${escapeHtml(truncateText(c.description) || '本文はありません。')}</p><p class="meta">投稿者：${escapeHtml(c.author || '不明')} / コメント：${c.commentCount} / スコア：${c.score} / 投稿日：${escapeHtml(formatDate(c.publishedAt))}</p><p class="meta">加点：${escapeHtml(c.problemSignalReasons.positiveReasons.join('、') || 'なし')}<br>減点：${escapeHtml(c.problemSignalReasons.negativeReasons.join('、') || 'なし')}</p><p>${c.tags.map((t)=>`<span class="label-chip">${escapeHtml(t)}</span>`).join(' ')}</p><div class="candidate-actions"><a href="${escapeHtml(c.sourceUrl)}" target="_blank" rel="noopener noreferrer">${c.metadata?.articleUrl && c.metadata?.hnItemUrl ? '元記事を開く' : '元ページを開く'}</a>${c.metadata?.hnItemUrl && c.metadata?.articleUrl ? `<a href="${escapeHtml(c.metadata.hnItemUrl)}" target="_blank" rel="noopener noreferrer">HN投稿を開く</a>` : ''}<button class="primary-button" data-action="save-candidate" ${s?'disabled':''}>${s?'保存済み':'課題として保存'}</button></div></article>`; }).join("") : '<p class="empty">表示できる候補はありません。</p>'; }
+  function renderNeeds(){ const filtered = filterAndSortNeeds(needs, needFilters()); els.needCount.textContent = `${needs.length}件（表示 ${filtered.length}件）`; els.needsList.innerHTML = filtered.length ? filtered.map((n)=>`<article class="need-item" data-id="${escapeHtml(n.id)}"><div class="item-head"><h3>${escapeHtml(n.title)}</h3><span>${escapeHtml(REVIEW_STATUSES[n.reviewStatus] || '未確認')}</span></div><p class="score">課題らしさ目安：${normalizeNumber(n.problemSignalScore)}点</p>${n.description?`<p>${escapeHtml(n.description).replace(/\n/g,'<br>')}</p>`:''}<p class="meta">情報源：${escapeHtml(n.source || (n.sourceType ? n.sourceType : '手動'))} / 登録：${escapeHtml(formatDate(n.createdAt))} / 更新：${escapeHtml(formatDate(n.updatedAt))}</p>${n.userMemo?`<p><strong>メモ：</strong>${escapeHtml(n.userMemo).replace(/\n/g,'<br>')}</p>`:''}<p>${(n.userTags||[]).map((t)=>`<span class="label-chip">${escapeHtml(t)}</span>`).join(' ') || '<span class="muted-text">タグなし</span>'}</p><div class="need-actions">${n.sourceUrl?`<a href="${escapeHtml(n.sourceUrl)}" target="_blank" rel="noopener noreferrer">元ページ</a>`:''}<button class="secondary-button" data-action="edit">編集</button><button class="danger-button" data-action="delete">削除</button></div></article>`).join("") : '<p class="empty">条件に合う保存済み課題はありません。</p>'; }
+  function renderAll(){ renderCandidates(); renderNeeds(); }
+  els.form.addEventListener("submit", (e)=>{ e.preventDefault(); const existing=needs.find((n)=>n.id===els.id.value); const next=createNeed({ extra:existing, id:existing?.id, title:els.title.value, description:els.description.value, affected:els.affected.value, payer:els.payer.value, source:els.source.value, sourceUrl:existing?.sourceUrl||"", externalId:existing?.externalId||"", sourceType:existing?.sourceType||"", fetchedAt:existing?.fetchedAt||"", createdAt:existing?.createdAt, reviewStatus:els.status.value, userTags:els.tags.value, userMemo:els.memo.value }, new Date()); if(!next.title){ show(els.msg,"タイトルを入力してください。","error"); return; } needs=existing?needs.map((n)=>n.id===existing.id?next:n):[next,...needs]; persist(); resetForm(); renderAll(); show(els.msg, existing?"課題を更新しました。":"課題を登録しました。"); });
+  els.externalForm.addEventListener("submit", async (e)=>{ e.preventDefault(); els.fetchBtn.disabled=true; show(els.externalMsg,"通信中です…"); try { candidates = els.externalSource.value === "hacker_news" ? await fetchHackerNewsStories(els.externalQuery.value, fetch, { pageSize:els.hnPageSize.value, order:els.hnOrder.value, kind:els.hnKind.value }) : await fetchGitHubIssues(els.externalQuery.value); renderAll(); show(els.externalMsg, candidates.length ? `${candidates.length}件の候補を取得しました。` : "取得結果は0件でした。", candidates.length ? "success" : "warning"); } catch(err){ show(els.externalMsg, err.message || "API通信に失敗しました。", "error"); } finally { els.fetchBtn.disabled=false; } });
+  els.candidatesList.addEventListener("click", (e)=>{ const b=e.target.closest("button[data-action='save-candidate']"); if(!b) return; const c=candidates.find((x)=>x.candidateId===b.closest(".candidate-item")?.dataset.id); if(!c) return; if(isSavedCandidate(c,needs)){ show(els.externalMsg,"この候補は保存済みです。","warning"); renderAll(); return; } needs=[candidateToNeed(c),...needs]; persist(); show(els.externalMsg,"候補を課題として保存しました。"); renderAll(); });
+  els.needsList.addEventListener("click", (e)=>{ const b=e.target.closest("button[data-action]"); if(!b) return; const n=needs.find((x)=>x.id===b.closest(".need-item")?.dataset.id); if(!n) return; if(b.dataset.action==="edit"){ els.id.value=n.id; els.title.value=n.title; els.description.value=n.description; els.affected.value=n.affected; els.payer.value=n.payer; els.source.value=n.source; els.status.value=n.reviewStatus || "unreviewed"; els.tags.value=(n.userTags||[]).join(", "); els.memo.value=n.userMemo||""; els.formTitle.textContent="課題を編集する"; els.form.querySelector(".primary-button").textContent="更新する"; els.cancel.hidden=false; els.title.focus(); return; } if(window.confirm("この課題を削除しますか？")){ needs=needs.filter((x)=>x.id!==n.id); persist(); resetForm(); renderAll(); show(els.msg,"課題を削除しました。"); } });
+  els.cancel.addEventListener("click",()=>{ resetForm(); show(els.msg,"編集を取り消しました。","warning"); });
+  els.clearCandidates.addEventListener("click",()=>{ candidates=[]; renderAll(); show(els.externalMsg,"取得結果を消去しました。","warning"); });
+  $("#reset-candidate-filters").addEventListener("click",()=>{ $("#candidate-search").value=""; $("#candidate-source-filter").value="all"; $("#candidate-saved-filter").value="unsaved"; $("#candidate-min-comments").value="0"; $("#candidate-min-score").value="0"; $("#candidate-sort").value="signal"; $("#hide-saved-candidates").checked=true; renderCandidates(); });
+  $("#reset-need-filters").addEventListener("click",()=>{ $("#need-search").value=""; $("#need-status-filter").value="all"; $("#need-source-filter").value="all"; $("#need-tag-filter").value=""; $("#need-min-signal").value="0"; $("#need-sort").value="updated"; renderNeeds(); });
+  $$("#candidate-search,#candidate-source-filter,#candidate-saved-filter,#candidate-min-comments,#candidate-min-score,#candidate-sort,#hide-saved-candidates").forEach((el)=>el.addEventListener("input", renderCandidates));
+  $$("#need-search,#need-status-filter,#need-source-filter,#need-tag-filter,#need-min-signal,#need-sort").forEach((el)=>el.addEventListener("input", renderNeeds));
+  $$("[data-example]").forEach((b)=>b.addEventListener("click",()=>{ els.externalQuery.value=b.dataset.example; }));
+  $("#export-json").addEventListener("click",()=>{ try { const blob=new Blob([JSON.stringify(exportBackup(needs), null, 2)], { type:"application/json" }); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`market-needs-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); show(els.importMsg,"JSONを書き出しました。"); } catch { show(els.importMsg,"書き出しに失敗しました。","error"); } });
+  els.importForm.addEventListener("submit", async (e)=>{ e.preventDefault(); pendingImport=null; els.importPreview.innerHTML=""; const file=els.importFile.files?.[0]; if(!file){ show(els.importMsg,"JSONファイルを選択してください。","error"); return; } if(file.size>MAX_IMPORT_BYTES){ show(els.importMsg,"JSONファイルが大きすぎます。1MB以下にしてください。","error"); return; } try { const result=analyzeImportText(await file.text(), needs); pendingImport=result.newNeeds; const type = result.newNeeds.length ? "warning" : "error"; show(els.importMsg, `対象${result.total}件 / 新規${result.newNeeds.length}件 / 重複${result.duplicateCount}件 / 不正${result.invalidCount}件`, type); els.importPreview.innerHTML = result.newNeeds.length ? '<button type="button" id="confirm-import" class="primary-button">確認して追加・統合</button>' : '<p class="empty">読み込める新規課題がありません。</p>'; } catch(err){ show(els.importMsg, err.message, "error"); } });
+  els.importPreview.addEventListener("click",(e)=>{ if(e.target.id!=="confirm-import" || !pendingImport) return; needs=[...pendingImport,...needs]; persist(); pendingImport=null; els.importPreview.innerHTML=""; renderAll(); show(els.importMsg,"JSONから課題を追加しました。"); });
+  renderAll();
 }
-
 if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", setupApp);
-
-if (typeof module !== "undefined") {
-  module.exports = { STORAGE_KEY, GITHUB_ISSUES_PER_PAGE, HACKER_NEWS_PAGE_SIZE, createNeed, safeDate, normalizeNeed, loadNeeds, saveNeeds, escapeHtml, truncateText, createCandidate, isValidCandidate, parseGitHubRepo, createGitHubIssuesUrl, githubIssueToCandidate, normalizeGitHubIssues, fetchGitHubIssues, createHackerNewsUrl, hackerNewsHitToCandidate, normalizeHackerNewsStories, fetchHackerNewsStories, candidateToNeed, isSavedCandidate };
-}
+if (typeof module !== "undefined") module.exports = { STORAGE_KEY, APP_NAME, EXPORT_SCHEMA_VERSION, GITHUB_ISSUES_PER_PAGE, HACKER_NEWS_DEFAULT_QUERY, REVIEW_STATUSES, scoreProblemSignal, createNeed, safeDate, normalizeNeed, loadNeeds, saveNeeds, escapeHtml, stripHtml, truncateText, normalizeTags, createCandidate, isValidCandidate, parseGitHubRepo, createGitHubIssuesUrl, githubIssueToCandidate, normalizeGitHubIssues, createHackerNewsUrl, detectHnKind, hackerNewsHitToCandidate, normalizeHackerNewsStories, fetchGitHubIssues, fetchHackerNewsStories, candidateToNeed, isSavedCandidate, stableSort, filterAndSortCandidates, filterAndSortNeeds, exportBackup, analyzeImportText, isDuplicateNeed };

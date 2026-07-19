@@ -7,80 +7,55 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">Market Need Radar</p>
-        <h1>社会ニーズ発見レーダー</h1>
-        <p class="lead">社会の不満や非効率を記録し、事業候補として見返せるようにします。</p>
-      </div>
-    </header>
-
+    <header class="app-header"><div><p class="eyebrow">Market Need Radar</p><h1>社会ニーズ発見レーダー</h1><p class="lead">外部候補を選別し、保存した課題を整理・バックアップできます。</p></div></header>
     <main class="layout">
       <section class="card form-card" aria-labelledby="form-title">
-        <h2 id="form-title">課題を登録する</h2>
-        <p class="hint">タイトルだけは必須です。分からない項目は空欄のまま保存できます。</p>
+        <h2 id="form-title">課題を登録する</h2><p class="hint">タイトルだけは必須です。外部候補から保存した課題も編集できます。</p>
         <form id="need-form" novalidate>
           <input type="hidden" id="need-id">
-
-          <label for="title">課題のタイトル <span class="required">必須</span></label>
-          <input id="title" name="title" type="text" autocomplete="off" required placeholder="例：部活動の予定共有が分かりにくい">
-
-          <label for="description">課題の詳しい内容</label>
-          <textarea id="description" name="description" rows="5" placeholder="どんな場面で、何に困っているかを書きます"></textarea>
-
-          <label for="affected">困っている人や企業</label>
-          <input id="affected" name="affected" type="text" placeholder="例：部員、保護者、顧問の先生">
-
-          <label for="payer">支払者候補</label>
-          <input id="payer" name="payer" type="text" placeholder="例：学校、保護者、地域クラブ">
-
-          <label for="source">情報源</label>
-          <input id="source" name="source" type="text" placeholder="例：友人から聞いた話、SNS、レビューURL">
-
+          <label for="title">課題のタイトル <span class="required">必須</span></label><input id="title" required autocomplete="off">
+          <label for="description">課題の詳しい内容</label><textarea id="description" rows="5"></textarea>
+          <label for="affected">困っている人や企業</label><input id="affected">
+          <label for="payer">支払者候補</label><input id="payer">
+          <label for="source">情報源</label><input id="source">
+          <label for="review-status">検討状態</label><select id="review-status"><option value="unreviewed">未確認</option><option value="promising">有望</option><option value="hold">保留</option><option value="rejected">除外</option></select>
+          <label for="user-tags">手動タグ（カンマ区切り）</label><input id="user-tags" placeholder="例：学校, 予約, AI">
+          <label for="user-memo">自分用メモ</label><textarea id="user-memo" rows="4" placeholder="要約、気になった理由、追加調査、解決案など"></textarea>
           <p id="form-message" class="message" role="status" aria-live="polite"></p>
-
-          <div class="button-row">
-            <button type="submit" class="primary-button">登録する</button>
-            <button type="button" id="cancel-edit" class="secondary-button" hidden>編集をやめる</button>
-          </div>
+          <div class="button-row"><button type="submit" class="primary-button">登録する</button><button type="button" id="cancel-edit" class="secondary-button" hidden>編集をやめる</button></div>
         </form>
       </section>
-
-      <section class="card list-card" aria-labelledby="list-title">
-        <div class="list-header">
-          <div>
-            <h2 id="list-title">登録した課題</h2>
-            <p id="need-count" class="hint">0件</p>
+      <section class="card workspace" aria-labelledby="workspace-title">
+        <h2 id="workspace-title">候補選別ワークスペース</h2>
+        <form id="external-candidates-form" class="panel" aria-labelledby="external-import-title">
+          <h3 id="external-import-title">外部から課題候補を取得</h3><p class="hint">課題らしさ目安はAI評価や成功確率ではなく、説明可能なキーワードと投稿情報だけの目安です。</p>
+          <div class="control-grid">
+            <label>情報源<select id="external-source"><option value="github_issues">GitHub Issues</option><option value="hacker_news">Hacker News</option></select></label>
+            <label>入力内容<input id="external-query" inputmode="search" placeholder="GitHub: owner/repo / HN: 検索語"></label>
+            <label>HN取得件数<select id="hn-page-size"><option>10</option><option selected>20</option><option>30</option><option>50</option></select></label>
+            <label>HN取得順<select id="hn-order"><option value="date">新しい順</option><option value="relevance">関連度または人気順</option></select></label>
+            <label>HN投稿種別<select id="hn-kind"><option value="all">すべて</option><option value="ask_hn">Ask HN</option><option value="show_hn">Show HN</option></select></label>
           </div>
-        </div>
-
-        <form id="external-candidates-form" class="external-import" aria-labelledby="external-import-title">
-          <h3 id="external-import-title">外部から課題候補を取得</h3>
-          <p class="hint">GitHub IssuesとHacker Newsから保存前の候補を取得し、確認したものだけ課題として保存します。</p>
-
-          <label for="external-source">情報源</label>
-          <select id="external-source" name="external-source">
-            <option value="github_issues">GitHub Issues</option>
-            <option value="hacker_news">Hacker News</option>
-          </select>
-
-          <label for="external-query">入力内容</label>
-          <div class="inline-form">
-            <input id="external-query" name="external-query" type="text" inputmode="search" placeholder="GitHub: owner/repo またはURL / HN: 検索語">
-            <button type="submit" id="external-fetch-button" class="secondary-button">候補を取得</button>
-          </div>
+          <div class="example-row"><button type="button" data-example="workflow pain">workflow pain</button><button type="button" data-example="Ask HN: frustrating">Ask HN: frustrating</button><button type="button" data-example="small business problem">small business problem</button></div>
+          <div class="button-row"><button type="submit" id="external-fetch-button" class="primary-button">候補を取得</button><button type="button" id="clear-candidates" class="secondary-button">取得結果を消去</button></div>
           <p id="external-candidates-message" class="message" role="status" aria-live="polite"></p>
         </form>
-
-        <section class="candidate-section" aria-labelledby="candidate-list-title">
-          <h3 id="candidate-list-title">保存前の課題候補</h3>
-          <div id="candidates-list" class="candidates-list" aria-live="polite"></div>
+        <section class="panel"><h3>保存前の課題候補</h3>
+          <div class="control-grid">
+            <label>検索<input id="candidate-search" inputmode="search"></label><label>情報源<select id="candidate-source-filter"><option value="all">すべて</option><option value="github_issues">GitHub Issues</option><option value="hacker_news">Hacker News</option></select></label>
+            <label>保存状態<select id="candidate-saved-filter"><option value="unsaved">未保存のみ</option><option value="all">すべて</option><option value="saved">保存済みのみ</option></select></label><label>最低コメント数<input id="candidate-min-comments" inputmode="numeric" value="0"></label><label>最低スコア<input id="candidate-min-score" inputmode="numeric" value="0"></label>
+            <label>並べ替え<select id="candidate-sort"><option value="signal">課題らしさが高い順</option><option value="newest">新しい順</option><option value="comments">コメント数が多い順</option><option value="score">スコアまたはポイントが高い順</option><option value="fetched">取得した順</option></select></label>
+          </div>
+          <div class="button-row"><button type="button" id="reset-candidate-filters" class="secondary-button">条件リセット</button><label class="check-label"><input type="checkbox" id="hide-saved-candidates" checked> 保存済み候補を非表示</label></div>
+          <p id="candidate-summary" class="summary"></p><div id="candidates-list" class="candidates-list" aria-live="polite"></div>
         </section>
-
-        <div id="needs-list" class="needs-list" aria-live="polite"></div>
+        <section class="panel saved-panel"><h3>登録した課題</h3><p id="need-count" class="hint">0件</p>
+          <div class="control-grid"><label>検索<input id="need-search" inputmode="search"></label><label>状態<select id="need-status-filter"><option value="all">すべて</option><option value="unreviewed">未確認</option><option value="promising">有望</option><option value="hold">保留</option><option value="rejected">除外</option></select></label><label>情報源<select id="need-source-filter"><option value="all">すべて</option><option value="manual">手動</option><option value="github_issues">GitHub Issues</option><option value="hacker_news">Hacker News</option></select></label><label>タグ<input id="need-tag-filter"></label><label>最低課題らしさ<input id="need-min-signal" inputmode="numeric" value="0"></label><label>並べ替え<select id="need-sort"><option value="updated">更新が新しい順</option><option value="created">登録が新しい順</option><option value="signal">課題らしさ順</option><option value="status">状態別</option><option value="title">タイトル順</option></select></label></div>
+          <div class="button-row"><button type="button" id="reset-need-filters" class="secondary-button">条件リセット</button><button type="button" id="export-json" class="secondary-button">JSONを書き出す</button></div>
+          <form id="import-form" class="import-box"><label for="import-file">JSONを読み込む</label><input id="import-file" type="file" accept="application/json,.json"><button type="submit" class="secondary-button">内容を確認</button><p id="import-message" class="message" role="status" aria-live="polite"></p><div id="import-preview"></div></form>
+          <div id="needs-list" class="needs-list" aria-live="polite"></div>
+        </section>
       </section>
-    </main>
-
-    <script src="app.js"></script>
+    </main><script src="app.js"></script>
   </body>
 </html>
