@@ -109,15 +109,32 @@ button:disabled { cursor: wait; opacity: .65; }
 .muted-text { color: var(--muted); }
 
 .list-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
-.github-import {
+.external-import {
   margin: 4px 0 18px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: #f8fafc;
 }
-.github-import h3 { margin: 0 0 6px; font-size: 1.05rem; }
-.github-import label { margin-top: 10px; }
+.external-import h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.external-import label { margin-top: 10px; }
+
+.candidate-section { margin: 18px 0; }
+.candidate-section h3 { margin: 0 0 10px; font-size: 1.05rem; }
+.candidates-list { display: grid; gap: 12px; margin-bottom: 18px; }
+.candidate-item { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: #ffffff; overflow-wrap: anywhere; }
+.candidate-heading { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+.candidate-heading h4 { margin: 0 0 8px; font-size: 1.05rem; }
+.candidate-source { color: var(--muted); font-size: .9rem; white-space: nowrap; }
+.candidate-body { margin: 8px 0; }
+.candidate-meta, .label-row, .candidate-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.candidate-meta { color: var(--muted); font-size: .9rem; }
+.label-row { margin-top: 10px; }
+.label-chip { display: inline-block; border-radius: 999px; background: #dbeafe; color: #1e40af; padding: 3px 9px; font-size: .85rem; font-weight: 700; }
+.candidate-actions { margin-top: 12px; justify-content: space-between; }
+.candidate-actions button { width: auto; min-width: 132px; }
+.external-link { color: var(--primary); font-weight: 700; }
+
 .needs-list { display: grid; gap: 14px; }
 .empty { padding: 24px; border: 1px dashed var(--line); border-radius: 16px; color: var(--muted); text-align: center; }
 .need-item { border: 1px solid var(--line); border-radius: 16px; padding: 16px; overflow-wrap: anywhere; }
@@ -134,6 +151,6 @@ button:disabled { cursor: wait; opacity: .65; }
 }
 
 @media (max-width: 520px) {
-  .button-row, .inline-form, .need-actions { flex-direction: column; }
-  .inline-form button, .need-actions button { width: 100%; }
+  .button-row, .inline-form, .need-actions, .candidate-heading, .candidate-actions { flex-direction: column; }
+  .inline-form button, .need-actions button, .candidate-actions button { width: 100%; }
 }
