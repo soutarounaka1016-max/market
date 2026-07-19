@@ -1,8 +1,6 @@
 const STORAGE_KEY = "marketNeeds.v1";
-const GITHUB_API_BASE = "https://api.github.com/repos";
-const GITHUB_ALLOWED_STATES = ["open", "all"];
-const GITHUB_ALLOWED_LIMITS = [10, 20];
-const DESCRIPTION_PREVIEW_LENGTH = 240;
+const GITHUB_ISSUES_PER_PAGE = 30;
+const GITHUB_REPO_PATTERN = /github\.com\/([^/\s]+)\/([^/\s#?]+)/i;
 
 function createNeed(input, now = new Date()) {
   const existingExtra = input.extra && typeof input.extra === "object" ? input.extra : {};
@@ -88,127 +86,55 @@ function escapeHtml(value) {
   }[char]));
 }
 
-function truncateText(value, maxLength = DESCRIPTION_PREVIEW_LENGTH) {
+function parseGitHubRepo(value) {
   const text = String(value || "").trim();
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength)}…`;
+  if (!text) return null;
+  const shorthandMatch = text.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  const urlMatch = text.match(GITHUB_REPO_PATTERN);
+  const match = shorthandMatch || urlMatch;
+  if (!match) return null;
+  return { owner: match[1], repo: match[2].replace(/\.git$/i, "") };
 }
 
-function normalizeGitHubInput(input) {
-  const owner = String(input.owner || "").trim();
-  const repo = String(input.repo || "").trim();
-  const state = GITHUB_ALLOWED_STATES.includes(input.state) ? input.state : "open";
-  const limit = GITHUB_ALLOWED_LIMITS.includes(Number(input.limit)) ? Number(input.limit) : 10;
-  if (!owner) throw new Error("GitHubのユーザー名または組織名を入力してください。");
-  if (!repo) throw new Error("リポジトリ名を入力してください。");
-  return { owner, repo, state, limit };
+function createGitHubIssuesUrl(repoInfo) {
+  const owner = encodeURIComponent(repoInfo.owner);
+  const repo = encodeURIComponent(repoInfo.repo);
+  return `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${GITHUB_ISSUES_PER_PAGE}`;
 }
 
-function createExternalId(owner, repo, issueNumber) {
-  return `github:${owner}/${repo}#${issueNumber}`.toLowerCase();
-}
-
-function createGitHubIssuesUrl(input) {
-  const params = new URLSearchParams({ state: input.state, per_page: String(input.limit) });
-  return `${GITHUB_API_BASE}/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues?${params.toString()}`;
-}
-
-function createGitHubErrorMessage(response) {
-  if (response.status === 404) return "リポジトリが存在しない、または非公開のため取得できません。ユーザー名とリポジトリ名を確認してください。";
-  if (response.status === 403) return "GitHub APIの利用上限に達した、またはアクセスが制限されています。しばらく待ってから再度試してください。";
-  if (response.status >= 500) return "GitHub API側で一時的な問題が発生しています。時間をおいて再度試してください。";
-  return `GitHub APIが正常でない応答を返しました（HTTP ${response.status}）。`;
-}
-
-function responseHeader(response, name) {
-  return response.headers && typeof response.headers.get === "function" ? response.headers.get(name) : null;
-}
-
-function issueToCandidate(issue, repoInfo, fetchedAt = new Date().toISOString()) {
-  const labels = Array.isArray(issue.labels) ? issue.labels.map((label) => {
-    if (typeof label === "string") return label;
-    return label && typeof label.name === "string" ? label.name : "";
-  }).filter(Boolean) : [];
-  return {
-    id: createExternalId(repoInfo.owner, repoInfo.repo, issue.number),
-    owner: repoInfo.owner,
-    repo: repoInfo.repo,
-    repositoryFullName: `${repoInfo.owner}/${repoInfo.repo}`,
-    number: issue.number,
-    title: typeof issue.title === "string" && issue.title.trim() ? issue.title.trim() : `GitHub Issue #${issue.number}`,
-    body: typeof issue.body === "string" ? issue.body : "",
-    labels,
-    comments: Number.isInteger(issue.comments) ? issue.comments : 0,
-    createdAt: typeof issue.created_at === "string" ? issue.created_at : "",
-    updatedAt: typeof issue.updated_at === "string" ? issue.updated_at : "",
-    htmlUrl: typeof issue.html_url === "string" ? issue.html_url : "",
-    fetchedAt,
-  };
-}
-
-function normalizeGitHubIssues(rawIssues, repoInfo, fetchedAt = new Date().toISOString()) {
-  if (!Array.isArray(rawIssues)) return [];
-  return rawIssues
-    .filter((issue) => issue && typeof issue === "object" && !issue.pull_request)
-    .filter((issue) => Number.isInteger(issue.number))
-    .map((issue) => issueToCandidate(issue, repoInfo, fetchedAt));
-}
-
-async function fetchGitHubIssues(input, fetcher = fetch) {
-  const repoInfo = normalizeGitHubInput(input);
-  const response = await fetcher(createGitHubIssuesUrl(repoInfo), {
-    headers: { Accept: "application/vnd.github+json" },
-  }).catch(() => {
-    throw new Error("ネットワーク通信に失敗しました。接続状況を確認してください。");
-  });
-
-  const remaining = responseHeader(response, "x-ratelimit-remaining");
-  if (!response.ok) throw new Error(createGitHubErrorMessage(response));
-
-  let parsed;
-  try {
-    parsed = await response.json();
-  } catch (error) {
-    throw new Error("GitHub APIの応答を読み取れませんでした。時間をおいて再度試してください。");
-  }
-
-  if (!Array.isArray(parsed)) {
-    throw new Error("GitHub APIが想定外の形式を返しました。リポジトリ名を確認してください。");
-  }
-
-  return {
-    candidates: normalizeGitHubIssues(parsed, repoInfo),
-    remaining,
-  };
-}
-
-function candidateToNeed(candidate, now = new Date()) {
+function issueToNeed(issue, now = new Date()) {
+  const body = typeof issue.body === "string" ? issue.body.trim() : "";
+  const createdAt = typeof issue.created_at === "string" ? issue.created_at : now.toISOString();
+  const source = typeof issue.html_url === "string" ? issue.html_url : "";
   return createNeed({
-    title: candidate.title,
-    description: candidate.body,
-    affected: "",
-    payer: "",
-    source: "GitHub Issues",
-    sourceUrl: candidate.htmlUrl,
-    externalId: candidate.id,
-    fetchedAt: candidate.fetchedAt,
+    id: `github-issue-${issue.id}`,
+    title: issue.title || `GitHub Issue #${issue.number || ""}`,
+    description: body ? body.slice(0, 1200) : "GitHub Issueから取り込みました。詳しい内容は情報源URLを確認してください。",
+    source,
+    createdAt,
   }, now);
 }
 
-function isSavedCandidate(candidate, needs) {
-  return needs.some((need) => (
-    (candidate.id && need.externalId === candidate.id) ||
-    (candidate.htmlUrl && need.sourceUrl === candidate.htmlUrl) ||
-    (candidate.htmlUrl && need.source === candidate.htmlUrl)
-  ));
+function normalizeGitHubIssues(rawIssues) {
+  if (!Array.isArray(rawIssues)) return [];
+  return rawIssues
+    .filter((issue) => issue && typeof issue === "object" && !issue.pull_request)
+    .filter((issue) => typeof issue.title === "string" && issue.title.trim())
+    .map((issue) => issueToNeed(issue));
 }
 
-function renderEvaluationIfPresent(need) {
-  if (!need.evaluation || typeof need.evaluation !== "object") return "";
-  const entries = Object.entries(need.evaluation).filter(([, value]) => value !== "" && value !== undefined && value !== null);
-  if (entries.length === 0) return "";
-  const total = entries.reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
-  return `<p><strong>評価合計：</strong>${escapeHtml(total)}点</p>`;
+async function fetchGitHubIssues(repoText, fetcher = fetch) {
+  const repoInfo = parseGitHubRepo(repoText);
+  if (!repoInfo) {
+    throw new Error("GitHubリポジトリは owner/repo または GitHubのURLで入力してください。");
+  }
+  const response = await fetcher(createGitHubIssuesUrl(repoInfo), {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Issuesを取得できませんでした（HTTP ${response.status}）。リポジトリ名や公開状態を確認してください。`);
+  }
+  return normalizeGitHubIssues(await response.json());
 }
 
 function setupApp() {
@@ -225,13 +151,9 @@ function setupApp() {
   const list = document.querySelector("#needs-list");
   const count = document.querySelector("#need-count");
   const issuesForm = document.querySelector("#github-issues-form");
-  const ownerInput = document.querySelector("#github-owner");
   const repoInput = document.querySelector("#github-repo");
-  const stateInput = document.querySelector("#github-state");
-  const limitInput = document.querySelector("#github-limit");
   const issuesMessage = document.querySelector("#github-issues-message");
   const importButton = document.querySelector("#github-import-button");
-  const candidatesList = document.querySelector("#github-candidates-list");
   let needs = loadNeeds();
   let candidates = [];
 
@@ -397,6 +319,29 @@ function setupApp() {
     renderCandidates();
   });
 
+  issuesForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    importButton.disabled = true;
+    showIssuesMessage("GitHub Issuesを取得しています…");
+    try {
+      const importedNeeds = await fetchGitHubIssues(repoInput.value);
+      const knownSources = new Set(needs.map((need) => need.source).filter(Boolean));
+      const uniqueNeeds = importedNeeds.filter((need) => !knownSources.has(need.source));
+      if (uniqueNeeds.length === 0) {
+        showIssuesMessage("新しく取り込めるIssueはありませんでした。");
+        return;
+      }
+      needs = [...uniqueNeeds, ...needs];
+      saveNeeds(needs);
+      renderNeeds();
+      showIssuesMessage(`${uniqueNeeds.length}件のIssueを課題として取り込みました。`);
+    } catch (error) {
+      showIssuesMessage(error.message || "GitHub Issuesの取得中にエラーが発生しました。", true);
+    } finally {
+      importButton.disabled = false;
+    }
+  });
+
   list.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
@@ -445,28 +390,17 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined") {
   module.exports = {
     STORAGE_KEY,
-    GITHUB_API_BASE,
-    GITHUB_ALLOWED_STATES,
-    GITHUB_ALLOWED_LIMITS,
-    DESCRIPTION_PREVIEW_LENGTH,
+    GITHUB_ISSUES_PER_PAGE,
     createNeed,
     safeDate,
     normalizeNeed,
     loadNeeds,
     saveNeeds,
-    formatDate,
-    formatDateTime,
     escapeHtml,
-    truncateText,
-    normalizeGitHubInput,
-    createExternalId,
+    parseGitHubRepo,
     createGitHubIssuesUrl,
-    createGitHubErrorMessage,
-    issueToCandidate,
+    issueToNeed,
     normalizeGitHubIssues,
     fetchGitHubIssues,
-    candidateToNeed,
-    isSavedCandidate,
-    renderEvaluationIfPresent,
   };
 }

@@ -55,41 +55,15 @@
         </div>
 
         <form id="github-issues-form" class="github-import" aria-labelledby="github-import-title">
-          <h3 id="github-import-title">外部から課題候補を取得</h3>
-          <p class="hint">GitHubの公開Issueを取得し、内容を確認してから1件ずつ課題として保存できます。</p>
-
-          <div class="github-grid">
-            <div>
-              <label for="github-owner">ユーザー名または組織名</label>
-              <input id="github-owner" name="github-owner" type="text" autocomplete="off" placeholder="例：octocat">
-            </div>
-            <div>
-              <label for="github-repo">リポジトリ名</label>
-              <input id="github-repo" name="github-repo" type="text" autocomplete="off" placeholder="例：Hello-World">
-            </div>
-            <div>
-              <label for="github-state">Issueの状態</label>
-              <select id="github-state" name="github-state">
-                <option value="open">open</option>
-                <option value="all">all</option>
-              </select>
-            </div>
-            <div>
-              <label for="github-limit">取得件数</label>
-              <select id="github-limit" name="github-limit">
-                <option value="10">10件</option>
-                <option value="20">20件</option>
-              </select>
-            </div>
+          <h3 id="github-import-title">GitHub Issuesから取り込む</h3>
+          <p class="hint">公開リポジトリの未完了Issueを最大30件取得し、重複していないものだけ課題として追加します。</p>
+          <label for="github-repo">リポジトリ</label>
+          <div class="inline-form">
+            <input id="github-repo" name="github-repo" type="text" inputmode="url" placeholder="例：owner/repo または GitHubのURL">
+            <button type="submit" id="github-import-button" class="secondary-button">Issueを取得</button>
           </div>
-          <button type="submit" id="github-import-button" class="secondary-button">Issueを取得する</button>
           <p id="github-issues-message" class="message" role="status" aria-live="polite"></p>
         </form>
-
-        <section class="candidate-section" aria-labelledby="candidate-title">
-          <h3 id="candidate-title">保存前の課題候補</h3>
-          <div id="github-candidates-list" class="candidate-list" aria-live="polite"></div>
-        </section>
 
         <div id="needs-list" class="needs-list" aria-live="polite"></div>
       </section>
