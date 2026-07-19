@@ -1,0 +1,126 @@
+const assert = require("assert");
+const app = require("../app.js");
+function storage(seed) {
+  let v = seed || null;
+  return {
+    getItem: () => v,
+    setItem: (_, n) => {
+      v = n;
+    },
+    value: () => v,
+  };
+}
+const repo = app.parseGitHubRepo("https://github.com/openai/codex");
+assert.deepStrictEqual(repo, { owner: "openai", repo: "codex" });
+const gh = app.normalizeGitHubIssues(
+  [
+    {
+      id: 1,
+      number: 2,
+      title: "Bug: cannot save data",
+      body: "Steps to reproduce: saving fails with error and users lose work",
+      comments: 7,
+      html_url: "https://x/1",
+      labels: [{ name: "bug" }],
+      user: { login: "me" },
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    },
+    { id: 2, title: "PR", html_url: "https://x/2", pull_request: {} },
+  ],
+  repo,
+);
+assert.strictEqual(gh.length, 1);
+assert.ok(gh[0].problemSignalScore >= 50);
+const hn = app.normalizeHackerNewsStories({
+  hits: [
+    {
+      objectID: "9",
+      title: "Ask HN: What problem frustrates small shops?",
+      story_text:
+        "I am looking for painful manual workflow examples from shop owners.",
+      author: "a",
+      num_comments: 22,
+      points: 50,
+      created_at: "2026-01-03",
+      url: "https://article",
+    },
+  ],
+});
+assert.strictEqual(hn[0].metadata.hnKind, "ask_hn");
+assert.ok(hn[0].metadata.hnItemUrl);
+assert.ok(
+  app
+    .createHackerNewsUrl("test", {
+      pageSize: 50,
+      order: "relevance",
+      kind: "show_hn",
+    })
+    .includes("/search?"),
+);
+const need = app.candidateToNeed(hn[0]);
+assert.ok(app.isSavedCandidate(hn[0], [need]));
+const needs = [
+  app.createNeed({
+    title: "B",
+    reviewStatus: "hold",
+    userTags: "x, y, x",
+    problemSignalScore: 30,
+  }),
+  app.createNeed({
+    title: "A",
+    reviewStatus: "promising",
+    userMemo: "school pain",
+    problemSignalScore: 80,
+    sourceType: "hacker_news",
+  }),
+];
+assert.deepStrictEqual(needs[0].userTags, ["x", "y"]);
+assert.strictEqual(
+  app.filterAndSortNeeds(needs, {
+    query: "school",
+    status: "all",
+    source: "all",
+    tag: "",
+    minSignal: 0,
+    sort: "title",
+  }).length,
+  1,
+);
+const filtered = app.filterAndSortCandidates(hn, [need], {
+  query: "",
+  source: "all",
+  saved: "all",
+  minComments: "10",
+  minScore: "0",
+  sort: "comments",
+  hideSaved: false,
+});
+assert.strictEqual(filtered.length, 1);
+assert.strictEqual(
+  app.filterAndSortCandidates(hn, [need], {
+    query: "",
+    source: "all",
+    saved: "unsaved",
+    minComments: "0",
+    minScore: "0",
+    sort: "signal",
+    hideSaved: true,
+  }).length,
+  0,
+);
+const backup = JSON.stringify(app.exportBackup(needs));
+const analysis = app.analyzeImportText(backup, [needs[0]]);
+assert.strictEqual(analysis.total, 2);
+assert.strictEqual(analysis.newNeeds.length, 1);
+assert.throws(() => app.analyzeImportText("{bad", []), /解析/);
+assert.strictEqual(
+  app.analyzeImportText(JSON.stringify({ needs: [] }), []).newNeeds.length,
+  0,
+);
+const st = storage(JSON.stringify([{ title: "old" }]));
+assert.strictEqual(app.loadNeeds(st).length, 1);
+app.saveNeeds(needs, st);
+assert.ok(st.value().includes("promising"));
+assert.ok(app.stripHtml("<b>x</b><script>bad</script>").includes("x"));
+console.log("app tests passed");
