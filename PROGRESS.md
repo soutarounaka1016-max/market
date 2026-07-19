@@ -4,8 +4,6 @@
 
 ## 今回完了したこと
 
-* `tasks/EXECUTION_PROTOCOL.md` はリポジトリ内に存在しなかったため、`tasks/active-task.md` と `AGENTS.md` の指示を優先して作業した。
-* 前回PRで読みづらくなっていた `app.js`、`index.html`、`styles.css`、`tests/app.test.js` を整形し、レビューしやすい差分に直した。
 * 既存の手動登録、編集、削除、localStorage復元、GitHub Issues変換、Pull Request除外、Hacker News変換、候補保存、重複防止をテストで確認した。
 * 保存前候補の検索、情報源・保存状態・数値絞り込み、複数条件、安定ソート、件数表示、条件リセット、取得結果消去を追加した。
 * AI APIを使わない0〜100点の課題らしさ目安と、加点・減点理由を追加した。
@@ -28,7 +26,6 @@
 
 ## テスト結果
 
-* `npx --yes prettier --write app.js styles.css index.html tests/app.test.js`：前回差分で崩れていたコード整形を修正した。
 * `node tests/app.test.js`：純粋関数で、既存CRUD相当の保存復元、GitHub変換、PR除外、Hacker News変換、重複防止、検索・絞り込み・並べ替え、課題らしさ、状態・タグ、JSON読み込みを確認した。
 * `node --check app.js`：JavaScript構文エラーがないことを確認した。
 * `git diff --check`：差分の空白エラーがないことを確認した。
